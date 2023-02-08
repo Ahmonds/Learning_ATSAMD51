@@ -4,10 +4,14 @@
 #define rAudio      A2  //red   PB08
 #define lAudio      A3  //white PB09
 
-int valueL = 1, valueR = 1;
+int valueL = 0, valueR = 0;
 uint64_t pastMillis = 0;
 Adafruit_NeoPixel strip(1, 8, NEO_GRB + NEO_KHZ800);
 
+#define arrSize 1000
+int arr[arrSize];
+
+// working without diff or cont. read
 void ADC0_Init() { // PB09, GCLK1 
 	
 	///ADC Clock Config
@@ -32,7 +36,7 @@ void ADC0_Init() { // PB09, GCLK1
 	ADC0->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC0; // 1/2 VDDANA
 	
 	//Select AIN3 (PB09) as positive input and gnd as negative input reference, non-diff mode by default
-	ADC0->INPUTCTRL.reg = ADC_INPUTCTRL_MUXNEG_GND | ADC_INPUTCTRL_MUXPOS_AIN3 | ADC_INPUTCTRL_DIFFMODE;
+	ADC0->INPUTCTRL.reg = ADC_INPUTCTRL_MUXNEG_GND | ADC_INPUTCTRL_MUXPOS_AIN3;// | ADC_INPUTCTRL_DIFFMODE;
 	//ADC0->INPUTCTRL.bit.DIFFMODE = 1; // bit 7
 
 	//Choose 12-bit resolution and Result Resolution for averaging
@@ -43,7 +47,8 @@ void ADC0_Init() { // PB09, GCLK1
 	// nSAMPLING = ( SAMPLEN + 1 )
 	
 	//Accumulate 8 samples and average according to table 45-3 before conversion ready to read
-	ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_8 | ADC_AVGCTRL_ADJRES(3);
+	ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);
+  //ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_8 | ADC_AVGCTRL_ADJRES(3);
 	
 	//Enable ADC
 	ADC0->CTRLA.bit.ENABLE = 1;
@@ -93,7 +98,7 @@ void ADC1_Init() { // PB08, GCLK1
 	// SampleTime = ( SAMPLEN + 1 ) * ( CLK_ADC )
 	
 	//Accumulate 16 samples and average according to table 45-3 before conversion ready to read
-	ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_16 | ADC_AVGCTRL_ADJRES(4);
+	ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);
 	
 	//Enable ADC
 	ADC1->CTRLA.bit.ENABLE = 1;
@@ -118,23 +123,8 @@ void setup() {
   strip.show();
   strip.setBrightness(16);
 
-  strip.setPixelColor(0, 64, 0, 0);
-  strip.show();
-  Serial.println(1);
-  delay(500);
-
-  strip.setPixelColor(0, 0, 0, 64);
-  strip.show();
-  Serial.println(2);
-  delay(500);
-
-  strip.setPixelColor(0, 0, 64, 0);
-  strip.show();
-  Serial.println(3);
-  delay(500);
-
 	// You can use the xxxSET and xxxCLR registers to modify the correponding xxx register without read/write ops
-	//  bit shift over by pin number to assign only that pin's configurations
+	//   bit shift over by pin number to assign only that pin's configurations
 	PORT->Group[1].DIRCLR.reg = (0<<9 | 0<<8); //If a bit in DIR is set to '1', the corresponding pin is configured as an output pin.
 	//PORT->Group[1].CTRL.reg = 1<<9; //configure PORTB for "continuous sampling"?
 	PORT->Group[1].OUTSET.reg = 0; //If bit y in OUT/OUTSET is written to '0', pin y is driven LOW
@@ -144,24 +134,44 @@ void setup() {
 
 	PORT->Group[1].PINCFG[8].bit.INEN = 1;		// bit 1 in PINCFG reg
 	PORT->Group[1].PINCFG[8].bit.PULLEN = 1;	// bit 2 in PINCFG reg
+
+  strip.setPixelColor(0, 64, 0, 0);
+  strip.show();
+  Serial.println(1);
+  delay(500);
 	
   //MCLK->APBDMASK.reg = ( 1<<7 | 1<<8 );
 	ADC0_Init();
-  Serial.println(4);
+
+  strip.setPixelColor(0, 0, 0, 64);
+  strip.show();
+  Serial.println(2);
+  delay(500);
 
   ADC1_Init();
-  Serial.println(5);
-}
 
-void loop() {
+  strip.setPixelColor(0, 0, 64, 0);
+  strip.show();
+  Serial.println(3);
+  delay(500);
+
+// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+
+  while(valueR < arrSize) {
   ADC0->SWTRIG.bit.START = 1;
   //ADC1->SWTRIG.bit.START = 1;
-
+  
   while(!ADC0->INTFLAG.bit.RESRDY);	// wait for averaged adc data to be ready
-  valueR = ADC0->RESULT.reg;	//copy data from average result register
+  arr[valueR] = ADC0->RESULT.reg;	//copy data from average result register
+  valueR++;
 
   //while(!ADC1->INTFLAG.bit.RESRDY);	// wait for averaged adc data to be ready
   //valueL = ADC1->RESULT.reg;	//copy data from average result register
+  }
   
-  Serial.println(valueR);
+  for (int i = 0; i < arrSize; i++) Serial.println(arr[i]);
+
+// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 }
+
+void loop() {}
