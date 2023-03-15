@@ -1,17 +1,26 @@
-// Use SAMD51's DMAC to read the ADC0 and ADC1 on A2 and A3 on Feather/Itsy Bitsy M4 respectively
+// https://www.utasker.com/docs/uTasker/uTasker_DSP.pdf
+// https://www.keil.com/pack/doc/CMSIS/DSP/html/group__RealFFT.html
+// https://electronics.stackexchange.com/questions/497595/input-and-output-array-for-cmsis-dsp-real-fft-q15-functions
+
+#include <Adafruit_NeoPixel.h>
 #include <algorithm>
 #include <iterator>
 #include "sam.h"
 #include <arm_math.h>
-#define dataSize 512 // DMAC data size (bytes)
-arm_rfft_instance_q15 fft;                            //https://www.keil.com/pack/doc/CMSIS/DSP/html/group__RealFFT.html#ga00e615f5db21736ad5b27fb6146f3fc5
+#include "arm_const_structs.h"
+
+#undef printf
+#define dataSize 512 // DMAC & FFT data size
+#define DMAtype int16_t
+arm_rfft_instance_q15 fft;
+//arm_rfft_fast_instance_f32 f32_fft;
+Adafruit_NeoPixel strip(1, 8, NEO_GRB + NEO_KHZ800);
 
 volatile boolean results0Ready = false;               // Results ready flags
 volatile boolean results1Ready = false;
-int16_t adcResultsR[dataSize], adcResultsL[dataSize]; // ADC result arrays
-int16_t RFFTin[dataSize],  LFFTin[dataSize];           // FFT input arrays (CMSIS FFT alters input array)
-int16_t RFFT[dataSize*2],  LFFT[dataSize*2];           // FFT result arrays
-int16_t RFFTMag[dataSize], LFFTMag[dataSize];         // FFT result magnitudes/freq_bin
+DMAtype adcResultsR[dataSize], adcResultsL[dataSize]; // ADC result arrays
+int16_t RFFTin[dataSize],  LFFTin[dataSize];            // FFT input arrays (CMSIS FFT alters input array)
+int16_t RFFT[dataSize*2],  LFFT[dataSize*2];            // FFT result arrays
 
 typedef struct {         // DMAC descriptor structure 
   uint16_t btctrl;
@@ -26,29 +35,45 @@ dmacdescriptor descriptor_section[DMAC_CH_NUM] __attribute__ ((aligned (16)));  
 dmacdescriptor descriptor __attribute__ ((aligned (16)));                         // Place holder descriptor
 
 void setup() {
-  Serial.begin(115200);                               // Start the native USB port
-  while(!Serial);                                     // Wait for the console to open
+  strip.begin();
+  strip.setBrightness(16);
+  strip.show();
   
+  Serial.begin(115200);
+  while(!Serial);
+  strip.setPixelColor(0, 32, 32, 32); strip.show(); delay(500);  // white
+
   arm_rfft_init_q15(&fft, dataSize, 0, 0);
+  //arm_rfft_fast_init_f32(&f32_fft, dataSize);
   // 100kHz/512 = 195.3Hz bin size
   //  50kHz/512 = 97.66Hz bin size  ->   20us*512 = 10.24ms
-
-  //testFFT();
   
-  setupDMAC();
-  setupADCs();  
+  for (uint16_t i = 0; i < dataSize; i++) { adcResultsR[i] = 100*sin(i*PI/100); }
+  strip.setPixelColor(0, 0, 0, 32); strip.show(); delay(500);  // blue
 
-  ADC0->SWTRIG.bit.START = 1;                           // Software trigger to start first ADC conversion
+  std::copy(adcResultsR, adcResultsR+dataSize, RFFTin);
+  //for (uint16_t i = 0; i < dataSize; i++) { Serial.printf("%d, ", RFFTin[i]); } Serial.println();
+  strip.setPixelColor(0, 32, 0, 0); strip.show(); delay(500);  // red
+
+  arm_rfft_q15(&fft, RFFTin, RFFT);                     // output of 512 size rfft_q15 are q9.7 types. Shift result right by 8 (divide 256)
+  //arm_cmplx_mag_q15(RFFT, RFFTMag, dataSize<<1);
+  //for (uint16_t i = 0; i < dataSize>>1; i++) { Serial.printf("%5d Hz : %d : %d\n", uint16_t(i*97.656), RFFT[i<<1], RFFT[(i<<1)-1]); }
+  for (uint16_t i = 0; i < dataSize>>1; i++) { Serial.printf("%5d Hz : %d\n", uint16_t(i*97.656), RFFT[i<<1]*RFFT[i<<1]); } //+ RFFT[i-1]*RFFT[i-1]
+  strip.setPixelColor(0, 0, 32, 0); strip.show(); delay(500);  // green
+
+  while(true);
+  //setupDMAC();
+  //setupADCs();
+
+  ADC0->SWTRIG.bit.START = 1;                 // Software trigger to start first ADC conversion
   while(ADC0->SYNCBUSY.bit.SWTRIG);
-
-  DMAC->Channel[0].CHCTRLA.bit.ENABLE = 1;              // Enable DMAC channel 0
-  DMAC->Channel[1].CHCTRLA.bit.ENABLE = 1;              // Enable DMAC channel 1
+  DMAC->Channel[0].CHCTRLA.bit.ENABLE = 1;    // Enable DMAC channel 0
+  DMAC->Channel[1].CHCTRLA.bit.ENABLE = 1;
   
 }// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
-void loop()  {  
-  while (!(results0Ready && results1Ready));    // Wait for both sets of results to be ready
-  // https://electronics.stackexchange.com/questions/497595/input-and-output-array-for-cmsis-dsp-real-fft-q15-functions
+void loop()  {
+  while (!(results0Ready && results1Ready));
   
   /*for (uint16_t i = 0; i < dataSize; i++) {
     Serial.print(adcResultsR[i]);                     // Output ADC results to Serial plotter
@@ -59,24 +84,14 @@ void loop()  {
   std::copy(adcResultsR, adcResultsR+dataSize, RFFTin);
   arm_rfft_q15(&fft, RFFTin, RFFT);                     // output of 512 size rfft_q15 are q9.7 types. Shift result right by 8 (divide 256)
   //arm_cmplx_mag_q15(RFFT, RFFTMag, dataSize); 
-  for (uint16_t i = 0; i < dataSize; ++i) { Serial.printf("%3.0d: %d\n", i, RFFT[i]); }
-  //Serial.print(F(","));
+  for (uint16_t i = 0; i < dataSize<<1; i+=2) { Serial.printf("%3.0d: %d\n", (i*50000/dataSize), ( RFFT[i]*RFFT[i] + RFFT[--i]*RFFT[--i] )); }
+
 
   while(true);
   results0Ready = false;                                // Clear the result ready flags
   results1Ready = false;
   DMAC->Channel[0].CHCTRLA.bit.ENABLE = 1;              // Enable DMAC channels
   DMAC->Channel[1].CHCTRLA.bit.ENABLE = 1;
-}// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
-
-void testFFT() {
-  for (uint16_t i = 0; i < dataSize; i++) { RFFTin[i] = 1000*sin((i*PI)/(180*51.2)); }
-  //std::copy(adcResultsR, adcResultsR+dataSize, RFFTin);
-
-  arm_rfft_q15(&fft, RFFTin, RFFT);                     // output of 512 size rfft_q15 are q9.7 types. Shift result right by 8 (divide 256) then cast to int16_t?
-  arm_cmplx_mag_q15(RFFT, RFFTMag, dataSize);
-  for (uint16_t i = 0; i < dataSize; ++i) { Serial.printf("%3.0d: %d\n", i, RFFTMag[i]); }
-  
 }// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
 void setupDMAC() { 
@@ -89,7 +104,7 @@ void setupDMAC() {
                                  DMAC_CHCTRLA_TRIGACT_BURST;                  // DMAC burst transfer
   descriptor.descaddr = (uint32_t) 0;                                         // Run descriptor only once
   descriptor.srcaddr = (uint32_t) &ADC0->RESULT.reg;                          // Take the result from the ADC0 RESULT register
-  descriptor.dstaddr = (uint32_t) adcResultsR + sizeof(int16_t) * dataSize;   // Place it in the adcResults0 array
+  descriptor.dstaddr = (uint32_t) adcResultsR + sizeof(DMAtype) * dataSize;   // Place it in the adcResults0 array
   descriptor.btcnt = dataSize;                                                // Beat count
   descriptor.btctrl = DMAC_BTCTRL_BEATSIZE_HWORD |                            // Beat size is HWORD (16-bits)
                       DMAC_BTCTRL_DSTINC |                                    // Increment the destination address
@@ -106,7 +121,7 @@ void setupDMAC() {
                                  DMAC_CHCTRLA_TRIGACT_BURST;                  // DMAC burst transfer
   descriptor.descaddr = (uint32_t) 0;                                         // Set up a circular descriptor
   descriptor.srcaddr = (uint32_t) &ADC1->RESULT.reg;                          // Take the result from the ADC1 RESULT register
-  descriptor.dstaddr = (uint32_t) adcResultsL + sizeof(int16_t) * dataSize;   // Place it in the adcResults1 array
+  descriptor.dstaddr = (uint32_t) adcResultsL + sizeof(DMAtype) * dataSize;   // Place it in the adcResults1 array
   descriptor.btcnt = dataSize;                                                // Beat count
   descriptor.btctrl = DMAC_BTCTRL_BEATSIZE_HWORD |                            // Beat size is HWORD (16-bits)
                       DMAC_BTCTRL_DSTINC |                                    // Increment the destination address
