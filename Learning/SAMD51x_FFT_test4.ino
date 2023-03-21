@@ -2,23 +2,29 @@
 // https://arm-software.github.io/CMSIS-DSP/v1.12.0/group__RealFFT.html 
 // https://electronics.stackexchange.com/questions/497595/input-and-output-array-for-cmsis-dsp-real-fft-q15-functions 
 
+#include <Adafruit_NeoPixel.h>
 #include <algorithm>
 #include <iterator>
 #include "sam.h"
 #include <arm_math.h>
 #include "arm_const_structs.h"
 
-
 #define dataSize 512 // DMAC & FFT data size
-#define DMAtype float // float = 32bits
+#define FFTtype float // float = 32bits
+#define DMAtype int16_t 
 arm_rfft_fast_instance_f32 F32FFT;
-//Adafruit_NeoPixel strip(1, 8, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel strip(1, 8, NEO_GRB + NEO_KHZ800);
+
+#define Button 5
+#define dbDelay 50
+volatile bool ButtonState = false, flip = true;
+volatile uint32_t PrevBounceMillis = 0;
 
 volatile boolean results0Ready = false;               // Results ready flags
 volatile boolean results1Ready = false;
 DMAtype adcResultsR[dataSize], adcResultsL[dataSize]; // ADC result arrays
-DMAtype RFFTin[dataSize], LFFTin[dataSize];           // FFT input arrays (CMSIS FFT alters input array)
-DMAtype RFFT[dataSize], LFFT[dataSize];               // FFT result arrays
+FFTtype RFFTin[dataSize], LFFTin[dataSize];           // FFT input arrays (CMSIS FFT alters input array)
+FFTtype RFFT[dataSize], LFFT[dataSize];               // FFT result arrays
 
 typedef struct {         // DMAC descriptor structure 
   uint16_t btctrl;
@@ -34,12 +40,21 @@ dmacdescriptor descriptor __attribute__ ((aligned (16)));                       
 
 void setup() {
   enableFPU();
+
+  pinMode(Button, INPUT_PULLUP);
+  strip.begin();
+  strip.setBrightness(16);
+  strip.clear();
+  strip.show();
+
   Serial.begin(115200);
   while(!Serial);
 
   //for (uint16_t i = 0; i < dataSize; i++) { adcResultsR[i] = 1*sin(i*2*PI/50); }  // * * * Generate data for testing * * *
   //while(true);//  * * * * * * * * * * * * * * * * * BLOCK CODE * * * * * * * * * * * * * * * * *
 
+  strip.setPixelColor(0, 16, 16, 16);
+  strip.show();
   setupDMAC();
   setupADCs();
 
@@ -47,27 +62,34 @@ void setup() {
   while(ADC0->SYNCBUSY.bit.SWTRIG);
   DMAC->Channel[0].CHCTRLA.bit.ENABLE = 1;    // Enable DMAC channel 0
   DMAC->Channel[1].CHCTRLA.bit.ENABLE = 1;
+  PrevBounceMillis = millis();
 }// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
 void loop()  {
+  strip.setPixelColor(0, 16, 0, 0);
+  strip.show();
   while (!(results0Ready && results1Ready));
+  strip.setPixelColor(0, 0, 16, 0);
+  strip.show();
   
   /*for (uint16_t i = 0; i < dataSize; i++) {
-    Serial.print(adcResultsR[i]);                     // Output ADC results to Serial plotter
+    Serial.print(RFFTin[i]);                     // Output ADC results to Serial plotter
     Serial.print(F(","));
-    Serial.println(adcResultsL[i]);
-  }*/
-
+    Serial.println(LFFTin[i]);
+  } while(flip) Debounce(); flip = true;*/
+  
   arm_rfft_fast_init_f32(&F32FFT, dataSize);
   std::copy(adcResultsR, adcResultsR+dataSize, RFFTin); // Copy DMAC results into FFT input array (CMSIS alters input array)
+  //for (uint16_t i; i < dataSize; i++) { Serial.print(adcResultsR[i]); Serial.print(", ");}
+  //Serial.println();
 
   arm_rfft_fast_f32(&F32FFT, RFFTin, RFFT, 0);          // CMSIS f32 (float) Real FFT
   for (uint16_t i = 0; i < dataSize>>1; i++) { 
     Serial.printf("%3d : %5d Hz : ", i, uint16_t(i*50000/dataSize));
-    //Serial.println( (RFFT[i<<1]*RFFT[i<<1])/1000 );
-    Serial.println( RFFT[i<<1] );
+    Serial.println( sqrd(RFFT[i<<1]/900) );    // CMSIS float square?
+    //Serial.println( RFFT[i<<1] );
   } 
-  while(true);//  * * * * * * * * * * * * * * * * * BLOCK CODE * * * * * * * * * * * * * * * * *
+  while(flip) Debounce(); flip = true;
 
   results0Ready = false;                                // Clear the result ready flags
   results1Ready = false;
@@ -84,7 +106,7 @@ void enableFPU() {
     "DSB \n"
     "ISB \n"
    );
-}
+}// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
 void setupDMAC() { 
 
@@ -95,10 +117,10 @@ void setupDMAC() {
   DMAC->Channel[0].CHCTRLA.reg = DMAC_CHCTRLA_TRIGSRC(ADC0_DMAC_ID_RESRDY) |  // Set DMAC to trigger when ADC0 result is ready
                                  DMAC_CHCTRLA_TRIGACT_BURST;                  // DMAC burst transfer
   descriptor.descaddr = (uint32_t) 0;                                         // Run descriptor only once
-  descriptor.srcaddr = (uint32_t) &ADC0->RESULT.reg;                          // Take the result from the ADC0 RESULT register
+  descriptor.srcaddr = (uint32_t) &ADC0->RESULT.reg;                             // Take the result from the ADC0 RESULT register
   descriptor.dstaddr = (uint32_t) adcResultsR + sizeof(DMAtype) * dataSize;   // Place it in the adcResults0 array
   descriptor.btcnt = dataSize;                                                // Beat count
-  descriptor.btctrl = DMAC_BTCTRL_BEATSIZE_WORD |                             // Beat size is WORD (32-bits)
+  descriptor.btctrl = DMAC_BTCTRL_BEATSIZE_HWORD |                             // Beat size is WORD (32-bits)
                       DMAC_BTCTRL_DSTINC |                                    // Increment the destination address
                       DMAC_BTCTRL_VALID;                                      // Descriptor is valid                    
   memcpy(&descriptor_section[0], &descriptor, sizeof(descriptor));            // Copy the descriptor to the descriptor section
@@ -112,10 +134,10 @@ void setupDMAC() {
   DMAC->Channel[1].CHCTRLA.reg = DMAC_CHCTRLA_TRIGSRC(ADC1_DMAC_ID_RESRDY) |  // Set DMAC to trigger when ADC1 result is ready
                                  DMAC_CHCTRLA_TRIGACT_BURST;                  // DMAC burst transfer
   descriptor.descaddr = (uint32_t) 0;                                         // Set up a circular descriptor
-  descriptor.srcaddr = (uint32_t) &ADC1->RESULT.reg;                          // Take the result from the ADC1 RESULT register
+  descriptor.srcaddr = (uint32_t) &ADC1->RESULT.reg;                             // Take the result from the ADC1 RESULT register
   descriptor.dstaddr = (uint32_t) adcResultsL + sizeof(DMAtype) * dataSize;   // Place it in the adcResults1 array
   descriptor.btcnt = dataSize;                                                // Beat count
-  descriptor.btctrl = DMAC_BTCTRL_BEATSIZE_WORD |                             // Beat size is HWORD (16-bits)
+  descriptor.btctrl = DMAC_BTCTRL_BEATSIZE_HWORD |                             // Beat size is HWORD (16-bits)
                       DMAC_BTCTRL_DSTINC |                                    // Increment the destination address
                       DMAC_BTCTRL_VALID;                                      // Descriptor is valid                  
   memcpy(&descriptor_section[1], &descriptor, sizeof(descriptor));            // Copy the descriptor to the descriptor section
@@ -132,7 +154,8 @@ void setupADCs() {// A3 left (ADC 1, slave) --- A2 right (ADC0, master)
   while(ADC1->SYNCBUSY.bit.INPUTCTRL);                // Wait for synchronization
   
   ADC1->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC0;     // 1/2 VDDANA ref
-  ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);    // Average 4 readings
+  ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 | ADC_AVGCTRL_ADJRES(0);
+  //ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);    // Average 4 readings
   //ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_8 | ADC_AVGCTRL_ADJRES(3);
 
   ADC1->SAMPCTRL.bit.SAMPLEN = 0x02;                  // Extend sampling time by SAMPCTRL cycles
@@ -145,13 +168,14 @@ void setupADCs() {// A3 left (ADC 1, slave) --- A2 right (ADC0, master)
   ADC1->CTRLA.bit.SLAVEEN = 1;                        // Set ADC1 to slave, ADC0 to master, both share CTRLA register
   
   // (12(bits) 1(sample) + 2(sampleCtrl)) * 4(avg) = 60 ticks
-  // ((12+1+2)*4)/((48*10^6)/8) = 10.0us
+  // 1/ ((12+1+2)*4)/((48*10^6)/16) = 50kHz (20us/sample)
 
   ADC0->INPUTCTRL.reg = ADC_INPUTCTRL_MUXNEG_GND | ADC_INPUTCTRL_MUXPOS_AIN2 | ADC_INPUTCTRL_DIFFMODE; // Set the analog input to A2 (right audio)
   while(ADC0->SYNCBUSY.bit.INPUTCTRL);                // Wait for synchronization
 
   ADC0->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC0;     // 1/2 VDDANA ref
-  ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);
+  ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 | ADC_AVGCTRL_ADJRES(0);
+  //ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);
   //ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_8 | ADC_AVGCTRL_ADJRES(3);
 
   ADC0->SAMPCTRL.bit.SAMPLEN = 0x02;
@@ -161,7 +185,7 @@ void setupADCs() {// A3 left (ADC 1, slave) --- A2 right (ADC0, master)
                     ADC_CTRLB_FREERUN;                // Set ADC to free run mode        
   while(ADC0->SYNCBUSY.bit.CTRLB);
 
-  ADC0->CTRLA.reg = ADC_CTRLA_PRESCALER_DIV16;        // Generated clock divider
+  ADC0->CTRLA.reg = ADC_CTRLA_PRESCALER_DIV64;        // Generated clock divider
   ADC0->CTRLA.bit.ENABLE = 1;                         // Enable the ADC
   while(ADC0->SYNCBUSY.bit.ENABLE);
 
@@ -184,3 +208,19 @@ void DMAC_1_Handler() {// Interrupt handler for DMAC channel 1 (left audio)
     results1Ready = true;                             // Set the results 1 ready flag  
   }
 }// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+
+void Debounce() {
+  if (!ButtonState) {
+    if (digitalRead(Button) == ButtonState) PrevBounceMillis = millis();
+    if (millis() - PrevBounceMillis > dbDelay) ButtonState = true;
+  }
+
+
+  if (ButtonState) {
+    if (digitalRead(Button) == ButtonState) PrevBounceMillis = millis();
+    if (millis() - PrevBounceMillis > dbDelay) {
+      ButtonState = false;
+      flip = false;
+    }
+  }
+}
