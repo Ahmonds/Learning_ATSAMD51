@@ -1,6 +1,9 @@
-// https://www.utasker.com/docs/uTasker/uTasker_DSP.pdf 
-// https://arm-software.github.io/CMSIS-DSP/v1.12.0/group__RealFFT.html 
-// https://electronics.stackexchange.com/questions/497595/input-and-output-array-for-cmsis-dsp-real-fft-q15-functions 
+// https://www.utasker.com/docs/uTasker/uTasker_DSP.pdf  DSP walkthrough
+// https://arm-software.github.io/CMSIS-DSP/v1.12.0/group__RealFFT.html  CMSIS Library Website
+
+// https://community.arm.com/support-forums/f/architectures-and-processors-forum/6988/process-adc-data-moved-by-dma-using-cmsis-dsp-what-s-the-right-way/27866#27866 
+// https://community.arm.com/support-forums/f/architectures-and-processors-forum/52016/how-do-we-correctly-use-the-cmsis-dsp-functions-that-have-fixed-point-qx-input-outputs 
+// https://community.arm.com/support-forums/f/architectures-and-processors-forum/8520/12-bit-from-adc-to-q15-for-a-fft
 
 #include <Adafruit_NeoPixel.h>
 #include <algorithm>
@@ -9,7 +12,7 @@
 #include <arm_math.h>
 #include "arm_const_structs.h"
 
-#define dataSize 512 // DMAC & FFT data size
+#define dataSize 512 // DMAC & FFT data size    1/51=0.001953125
 #define FFTtype float // float = 32bits
 #define DMAtype int16_t 
 arm_rfft_fast_instance_f32 F32FFT;
@@ -50,45 +53,50 @@ void setup() {
   Serial.begin(115200);
   while(!Serial);
 
-  //for (uint16_t i = 0; i < dataSize; i++) { adcResultsR[i] = 1*sin(i*2*PI/50); }  // * * * Generate data for testing * * *
+  for (uint16_t i = 0; i < dataSize; i++) { adcResultsR[i] = (DMAtype) 10*sin(i*2*PI/50); }  // * * * Generate 1kHz data for testing * * *
   //while(true);//  * * * * * * * * * * * * * * * * * BLOCK CODE * * * * * * * * * * * * * * * * *
 
   strip.setPixelColor(0, 16, 16, 16);
   strip.show();
-  setupDMAC();
+  /*setupDMAC();
   setupADCs();
 
   ADC0->SWTRIG.bit.START = 1;                 // Software trigger to start first ADC conversion
   while(ADC0->SYNCBUSY.bit.SWTRIG);
   DMAC->Channel[0].CHCTRLA.bit.ENABLE = 1;    // Enable DMAC channel 0
-  DMAC->Channel[1].CHCTRLA.bit.ENABLE = 1;
+  DMAC->Channel[1].CHCTRLA.bit.ENABLE = 1;*/
   PrevBounceMillis = millis();
 }// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
 void loop()  {
   strip.setPixelColor(0, 16, 0, 0);
   strip.show();
-  while (!(results0Ready && results1Ready));
-  strip.setPixelColor(0, 0, 16, 0);
-  strip.show();
+  //while (!(results0Ready && results1Ready));
   
-  /*for (uint16_t i = 0; i < dataSize; i++) {
-    Serial.print(RFFTin[i]);                     // Output ADC results to Serial plotter
+  /*for (uint16_t i = 0; i < dataSize; i++) { // Output ADC results to Serial plotter
+    Serial.print(RFFTin[i]);
     Serial.print(F(","));
     Serial.println(LFFTin[i]);
   } while(flip) Debounce(); flip = true;*/
   
-  arm_rfft_fast_init_f32(&F32FFT, dataSize);
-  std::copy(adcResultsR, adcResultsR+dataSize, RFFTin); // Copy DMAC results into FFT input array (CMSIS alters input array)
-  //for (uint16_t i; i < dataSize; i++) { Serial.print(adcResultsR[i]); Serial.print(", ");}
-  //Serial.println();
+  arm_rfft_fast_init_f32(&F32FFT, dataSize); // https://stackoverflow.com/questions/5456801/c-int-float-casting 
+  for(uint16_t i = 0; i < dataSize; i++) RFFTin[i] = adcResultsR[i]*0.0001f;
+  //std::copy(adcResultsR, adcResultsR+dataSize, RFFTin); // Copy DMAC results into FFT input array (CMSIS alters input array)
+
+  for (uint16_t i; i < dataSize; i++) Serial.println(adcResultsR[i]);
+  strip.setPixelColor(0, 0, 0, 16);
+  strip.show();
+  while(flip) Debounce(); flip = true;
 
   arm_rfft_fast_f32(&F32FFT, RFFTin, RFFT, 0);          // CMSIS f32 (float) Real FFT
   for (uint16_t i = 0; i < dataSize>>1; i++) { 
     Serial.printf("%3d : %5d Hz : ", i, uint16_t(i*50000/dataSize));
-    Serial.println( sqrd(RFFT[i<<1]/900) );    // CMSIS float square?
+    Serial.println( RFFT[i<<1]*RFFT[i<<1] );
     //Serial.println( RFFT[i<<1] );
-  } 
+  }
+
+  strip.setPixelColor(0, 0, 16, 0);
+  strip.show();
   while(flip) Debounce(); flip = true;
 
   results0Ready = false;                                // Clear the result ready flags
@@ -154,8 +162,8 @@ void setupADCs() {// A3 left (ADC 1, slave) --- A2 right (ADC0, master)
   while(ADC1->SYNCBUSY.bit.INPUTCTRL);                // Wait for synchronization
   
   ADC1->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC0;     // 1/2 VDDANA ref
-  ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 | ADC_AVGCTRL_ADJRES(0);
-  //ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);    // Average 4 readings
+  //ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 | ADC_AVGCTRL_ADJRES(0);
+  ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);    // Average 4 readings
   //ADC1->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_8 | ADC_AVGCTRL_ADJRES(3);
 
   ADC1->SAMPCTRL.bit.SAMPLEN = 0x02;                  // Extend sampling time by SAMPCTRL cycles
@@ -174,8 +182,8 @@ void setupADCs() {// A3 left (ADC 1, slave) --- A2 right (ADC0, master)
   while(ADC0->SYNCBUSY.bit.INPUTCTRL);                // Wait for synchronization
 
   ADC0->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC0;     // 1/2 VDDANA ref
-  ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 | ADC_AVGCTRL_ADJRES(0);
-  //ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);
+  //ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 | ADC_AVGCTRL_ADJRES(0);
+  ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);
   //ADC0->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_8 | ADC_AVGCTRL_ADJRES(3);
 
   ADC0->SAMPCTRL.bit.SAMPLEN = 0x02;
@@ -185,7 +193,7 @@ void setupADCs() {// A3 left (ADC 1, slave) --- A2 right (ADC0, master)
                     ADC_CTRLB_FREERUN;                // Set ADC to free run mode        
   while(ADC0->SYNCBUSY.bit.CTRLB);
 
-  ADC0->CTRLA.reg = ADC_CTRLA_PRESCALER_DIV64;        // Generated clock divider
+  ADC0->CTRLA.reg = ADC_CTRLA_PRESCALER_DIV16;        // Generated clock divider
   ADC0->CTRLA.bit.ENABLE = 1;                         // Enable the ADC
   while(ADC0->SYNCBUSY.bit.ENABLE);
 
@@ -209,12 +217,11 @@ void DMAC_1_Handler() {// Interrupt handler for DMAC channel 1 (left audio)
   }
 }// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
-void Debounce() {
+void Debounce() { // Activate on button press
   if (!ButtonState) {
     if (digitalRead(Button) == ButtonState) PrevBounceMillis = millis();
     if (millis() - PrevBounceMillis > dbDelay) ButtonState = true;
   }
-
 
   if (ButtonState) {
     if (digitalRead(Button) == ButtonState) PrevBounceMillis = millis();
