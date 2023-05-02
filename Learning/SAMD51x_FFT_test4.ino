@@ -1,7 +1,6 @@
 // https://www.utasker.com/docs/uTasker/uTasker_DSP.pdf  DSP walkthrough
 // https://arm-software.github.io/CMSIS-DSP/v1.12.0/group__RealFFT.html  CMSIS Library Website
 
-// https://community.arm.com/support-forums/f/architectures-and-processors-forum/6988/process-adc-data-moved-by-dma-using-cmsis-dsp-what-s-the-right-way/27866#27866 
 // https://community.arm.com/support-forums/f/architectures-and-processors-forum/52016/how-do-we-correctly-use-the-cmsis-dsp-functions-that-have-fixed-point-qx-input-outputs 
 // https://community.arm.com/support-forums/f/architectures-and-processors-forum/8520/12-bit-from-adc-to-q15-for-a-fft
 
@@ -12,8 +11,10 @@
 #include <arm_math.h>
 #include "arm_const_structs.h"
 
+#define breakPoint while(flip) Debounce(); flip = true;
+
 #define dataSize 512 // DMAC & FFT data size    1/51=0.001953125
-#define FFTtype float // float = 32bits
+#define FFTtype float // float = 32bits (single precision)
 #define DMAtype int16_t 
 arm_rfft_fast_instance_f32 F32FFT;
 Adafruit_NeoPixel strip(1, 8, NEO_GRB + NEO_KHZ800);
@@ -50,8 +51,7 @@ void setup() {
   strip.clear();
   strip.show();
 
-  Serial.begin(115200);
-  while(!Serial);
+  Serial.begin(115200); while(!Serial);
 
   for (uint16_t i = 0; i < dataSize; i++) { adcResultsR[i] = (DMAtype) 10*sin(i*2*PI/50); }  // * * * Generate 1kHz data for testing * * *
   //while(true);//  * * * * * * * * * * * * * * * * * BLOCK CODE * * * * * * * * * * * * * * * * *
@@ -73,7 +73,7 @@ void loop()  {
   strip.show();
   //while (!(results0Ready && results1Ready));
   
-  /*for (uint16_t i = 0; i < dataSize; i++) { // Output ADC results to Serial plotter
+  /*for (uint16_t i = 0; i < dataSize; i++) { // Output ADC results to Serial plotter 
     Serial.print(RFFTin[i]);
     Serial.print(F(","));
     Serial.println(LFFTin[i]);
@@ -86,7 +86,7 @@ void loop()  {
   for (uint16_t i; i < dataSize; i++) Serial.println(adcResultsR[i]);
   strip.setPixelColor(0, 0, 0, 16);
   strip.show();
-  while(flip) Debounce(); flip = true;
+  breakPoint
 
   arm_rfft_fast_f32(&F32FFT, RFFTin, RFFT, 0);          // CMSIS f32 (float) Real FFT
   for (uint16_t i = 0; i < dataSize>>1; i++) { 
@@ -97,7 +97,7 @@ void loop()  {
 
   strip.setPixelColor(0, 0, 16, 0);
   strip.show();
-  while(flip) Debounce(); flip = true;
+  breakPoint
 
   results0Ready = false;                                // Clear the result ready flags
   results1Ready = false;
